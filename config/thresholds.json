@@ -1,0 +1,7 @@
+{
+  "threshold_low": 0.35,
+  "threshold_high": 0.65,
+  "status": "provisional",
+  "calibrated_on_validation_set": false,
+  "note": "Provisional heuristic thresholds awaiting calibration on the validation set."
+}

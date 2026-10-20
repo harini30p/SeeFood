@@ -64,11 +64,21 @@ def read_root() -> Dict[str, str]:
     tags=["System"],
 )
 def health_check() -> Dict[str, Any]:
-    """Verify backend and model status."""
+    """Verify backend and model status, including threshold configuration."""
     is_model_loaded = model is not None and hasattr(model, "predict")
+    try:
+        from backend.inference import THRESHOLDS
+    except ImportError:
+        from inference import THRESHOLDS
+
     return {
         "status": "healthy" if is_model_loaded else "degraded",
         "model_loaded": is_model_loaded,
+        "thresholds": {
+            "low": THRESHOLDS.get("threshold_low"),
+            "high": THRESHOLDS.get("threshold_high"),
+            "status": THRESHOLDS.get("status"),
+        },
     }
 
 

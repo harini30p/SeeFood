@@ -284,6 +284,11 @@
   border: 1.5px solid var(--danger);
 }
 
+.result-card.uncertain {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(245, 158, 11, 0.05));
+  border: 1.5px solid var(--warning);
+}
+
 .result-header {
   display: flex;
   align-items: center;
@@ -307,6 +312,10 @@
 
 .not-hotdog .result-title {
   color: var(--danger);
+}
+
+.uncertain .result-title {
+  color: var(--warning);
 }
 
 .metrics-grid {
@@ -358,6 +367,18 @@
 
 .not-hotdog .progress-fill {
   background: var(--danger);
+}
+
+.uncertain .progress-fill {
+  background: var(--warning);
+}
+
+.provisional-note {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  text-align: center;
+  font-style: italic;
+  margin-top: 0.5rem;
 }
 
 /* Grad-CAM Explainability Section */

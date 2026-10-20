@@ -22,20 +22,6 @@ export default function App() {
   // Ref to programmatically open the hidden file input
   const fileInputRef = useRef(null)
 
-  // Check backend health on component mount
-  useEffect(() => {
-    checkHealth()
-  }, [])
-
-  // Clean up object URL when imagePreview changes to prevent memory leaks
-  useEffect(() => {
-    return () => {
-      if (imagePreview) {
-        URL.revokeObjectURL(imagePreview)
-      }
-    }
-  }, [imagePreview])
-
   /**
    * Ping GET /health on the FastAPI backend
    */
@@ -57,11 +43,54 @@ export default function App() {
         setBackendStatus('offline')
         setBackendError('Backend reached, but the model is not loaded.')
       }
-    } catch (err) {
+    } catch {
       setBackendStatus('offline')
       setBackendError('Cannot connect to FastAPI backend at http://127.0.0.1:8000. Is the server running?')
     }
   }
+
+  // Check backend health on component mount
+  useEffect(() => {
+    let ignore = false
+    async function runCheck() {
+      try {
+        const response = await fetch(`${API_BASE_URL}/health`, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+        })
+        if (!response.ok) {
+          throw new Error(`Health check status ${response.status}`)
+        }
+        const data = await response.json()
+        if (!ignore) {
+          if (data.status === 'healthy' && data.model_loaded) {
+            setBackendStatus('online')
+          } else {
+            setBackendStatus('offline')
+            setBackendError('Backend reached, but the model is not loaded.')
+          }
+        }
+      } catch {
+        if (!ignore) {
+          setBackendStatus('offline')
+          setBackendError('Cannot connect to FastAPI backend at http://127.0.0.1:8000. Is the server running?')
+        }
+      }
+    }
+    runCheck()
+    return () => {
+      ignore = true
+    }
+  }, [])
+
+  // Clean up object URL when imagePreview changes to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      if (imagePreview) {
+        URL.revokeObjectURL(imagePreview)
+      }
+    }
+  }, [imagePreview])
 
   /**
    * Validate image file type and extension
@@ -206,7 +235,10 @@ export default function App() {
     return 'N/A'
   }
 
-  const isHotdog = prediction?.label?.toLowerCase() === 'hotdog'
+  const labelLower = prediction?.label?.toLowerCase() || ''
+  const isHotdog = labelLower === 'hotdog'
+  const isUncertain = labelLower === 'uncertain'
+  const isNotHotdog = labelLower === 'not hotdog'
 
   // Validate Grad-CAM data URL safely
   const hasValidGradcam =
@@ -365,21 +397,24 @@ export default function App() {
         {/* Prediction Results & Grad-CAM Visual Explainability */}
         {prediction && (
           <article
-            className={`result-card ${isHotdog ? 'hotdog' : 'not-hotdog'}`}
+            className={`result-card ${
+              isHotdog ? 'hotdog' : isUncertain ? 'uncertain' : 'not-hotdog'
+            }`}
             aria-live="polite"
           >
             <div className="result-header">
               <span className="result-icon" aria-hidden="true">
-                {isHotdog ? '🌭' : '🚫'}
+                {isHotdog ? '🌭' : isUncertain ? '🤔' : '🚫'}
               </span>
               <div>
                 <h2 className="result-title">
                   {prediction.label || 'Unknown'}
                 </h2>
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                  {isHotdog
-                    ? 'AI verified! This item is classified as a Hotdog.'
-                    : 'AI verified! This item is classified as NOT a Hotdog.'}
+                  {isHotdog && 'AI verified! This item is classified as a Hotdog.'}
+                  {isNotHotdog && 'AI verified! This item is classified as NOT a Hotdog.'}
+                  {isUncertain &&
+                    'The model is unsure about this image. Try a clearer photo or review the result cautiously.'}
                 </p>
               </div>
             </div>
@@ -388,13 +423,17 @@ export default function App() {
               <div className="metric-item">
                 <span className="metric-label">Prediction Confidence</span>
                 <span className="metric-value">
-                  {formatConfidence(prediction.confidence)}
+                  {isUncertain
+                    ? 'Indeterminate'
+                    : formatConfidence(prediction.confidence)}
                 </span>
                 <div className="progress-bar-container">
                   <div
                     className="progress-fill"
                     style={{
-                      width: `${Math.min(100, Math.max(0, prediction.confidence || 0))}%`,
+                      width: isUncertain
+                        ? '0%'
+                        : `${Math.min(100, Math.max(0, prediction.confidence || 0))}%`,
                     }}
                   ></div>
                 </div>
@@ -415,6 +454,10 @@ export default function App() {
                 </div>
               </div>
             </div>
+
+            <p className="provisional-note">
+              Decision thresholds are provisional until calibrated on validation data.
+            </p>
 
             {/* Grad-CAM Explainability Section */}
             <div className="explain-section">
