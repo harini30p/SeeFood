@@ -81,10 +81,11 @@ def health_check() -> Dict[str, Any]:
 async def predict(
     file: UploadFile = File(..., description="Image file to classify"),
 ) -> Dict[str, Any]:
-    """Process uploaded image and return classification results.
+    """Process uploaded image and return classification results with Grad-CAM explainability.
 
     Validates file content using Pillow, executes MobileNetV2 inference,
-    and returns predicted label and confidence.
+    and returns predicted label, confidence, hotdog probability, and
+    the Grad-CAM heatmap base64 data URL.
     """
     # 1. Read binary content from the uploaded file
     try:

@@ -150,7 +150,7 @@ export default function App() {
     try {
       const response = await fetch(`${API_BASE_URL}/predict`, {
         method: 'POST',
-        // Do NOT set 'Content-Type': the browser will automatically
+        // Do NOT manually set 'Content-Type': the browser will automatically
         // provide 'multipart/form-data; boundary=...'
         body: formData,
       })
@@ -191,7 +191,7 @@ export default function App() {
     }
   }
 
-  // Helper formatting values safely
+  // Safe formatting helpers
   const formatConfidence = (val) => {
     if (typeof val === 'number' && !isNaN(val)) {
       return `${val.toFixed(1)}%`
@@ -207,6 +207,11 @@ export default function App() {
   }
 
   const isHotdog = prediction?.label?.toLowerCase() === 'hotdog'
+
+  // Validate Grad-CAM data URL safely
+  const hasValidGradcam =
+    typeof prediction?.gradcam_base64 === 'string' &&
+    prediction.gradcam_base64.startsWith('data:image/jpeg;base64,')
 
   return (
     <main className="app-container">
@@ -287,7 +292,7 @@ export default function App() {
             <div className="preview-wrapper">
               <img
                 src={imagePreview}
-                alt="Uploaded preview"
+                alt="Selected food preview"
                 className="image-preview"
               />
             </div>
@@ -321,7 +326,7 @@ export default function App() {
             {loading ? (
               <>
                 <span className="spinner" aria-hidden="true"></span>
-                <span>Analyzing Image...</span>
+                <span>Analyzing Image & Explainability...</span>
               </>
             ) : (
               <>
@@ -357,7 +362,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Prediction Results */}
+        {/* Prediction Results & Grad-CAM Visual Explainability */}
         {prediction && (
           <article
             className={`result-card ${isHotdog ? 'hotdog' : 'not-hotdog'}`}
@@ -373,8 +378,8 @@ export default function App() {
                 </h2>
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
                   {isHotdog
-                    ? 'AI verified! This item is indeed a hotdog.'
-                    : 'AI verified! This item is NOT a hotdog.'}
+                    ? 'AI verified! This item is classified as a Hotdog.'
+                    : 'AI verified! This item is classified as NOT a Hotdog.'}
                 </p>
               </div>
             </div>
@@ -409,6 +414,51 @@ export default function App() {
                   ></div>
                 </div>
               </div>
+            </div>
+
+            {/* Grad-CAM Explainability Section */}
+            <div className="explain-section">
+              <div className="explain-header">
+                <h3>
+                  <span aria-hidden="true">🔍</span>
+                  Where the AI Looked
+                </h3>
+                <p className="explain-disclaimer">
+                  This Grad-CAM heatmap highlights the key visual regions and patterns that most heavily
+                  influenced the neural network's prediction. It highlights model focus areas, but is not an
+                  absolute guarantee of classification accuracy.
+                </p>
+              </div>
+
+              {hasValidGradcam ? (
+                <div className="comparison-grid">
+                  <div className="comparison-column">
+                    <span className="comparison-label">Original Photo</span>
+                    <div className="comparison-media-wrapper">
+                      <img
+                        src={imagePreview}
+                        alt="Original food photo uploaded by user"
+                        className="comparison-image"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="comparison-column">
+                    <span className="comparison-label">Grad-CAM Heatmap Focus</span>
+                    <div className="comparison-media-wrapper">
+                      <img
+                        src={prediction.gradcam_base64}
+                        alt="Grad-CAM visual heatmap overlay showing areas that influenced the prediction"
+                        className="comparison-image"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="explain-unavailable">
+                  Visual explanation is currently unavailable for this prediction.
+                </div>
+              )}
             </div>
           </article>
         )}
