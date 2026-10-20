@@ -1,0 +1,55 @@
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
+
+# Python cache & compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+
+# Large ML / Deep Learning Model artifacts
+models/*.keras
+models/*.h5
+models/*.savedmodel/
+models/*.tflite
+models/*.pt
+models/*.pth
+models/*.onnx
+models/*.bin
+!models/.gitkeep
+
+# Node / Frontend dependencies & build output
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+build/
+frontend/build/
+.npm/
+
+# Logs & test coverage
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor & OS temporary files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
