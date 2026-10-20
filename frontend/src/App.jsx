@@ -5,6 +5,38 @@ import './App.css'
 const API_BASE_URL = 'http://127.0.0.1:8000'
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp']
 const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp']
+const SESSION_STORAGE_KEY = 'seefood_prediction_history'
+const MAX_HISTORY_ITEMS = 30
+
+/**
+ * Helper to safely read initial history from sessionStorage.
+ */
+function getInitialHistory() {
+  try {
+    const raw = sessionStorage.getItem(SESSION_STORAGE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) {
+        return parsed
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load prediction history from sessionStorage:', err)
+  }
+  return []
+}
+
+/**
+ * Helper to read a File as a base64 Data URL (for self-contained thumbnails/revisits).
+ */
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
 
 export default function App() {
   // State management
@@ -15,12 +47,19 @@ export default function App() {
   const [error, setError] = useState(null)
   const [isDragActive, setIsDragActive] = useState(false)
 
+  // Prediction History state
+  const [history, setHistory] = useState(getInitialHistory)
+  const [showClearConfirm, setShowClearConfirm] = useState(false)
+  const [activeHistoryId, setActiveHistoryId] = useState(null)
+
   // Backend connection status: 'checking' | 'online' | 'offline'
   const [backendStatus, setBackendStatus] = useState('checking')
   const [backendError, setBackendError] = useState(null)
 
   // Ref to programmatically open the hidden file input
   const fileInputRef = useRef(null)
+  // Ref to track if current imagePreview is an object URL that must be revoked
+  const isObjectUrlRef = useRef(false)
 
   /**
    * Ping GET /health on the FastAPI backend
@@ -83,11 +122,22 @@ export default function App() {
     }
   }, [])
 
-  // Clean up object URL when imagePreview changes to prevent memory leaks
+  // Sync history state to sessionStorage whenever it updates
   useEffect(() => {
+    try {
+      sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(history))
+    } catch (err) {
+      console.warn('Unable to persist history to sessionStorage (quota exceeded?):', err)
+    }
+  }, [history])
+
+  // Revoke object URL when imagePreview changes or unmounts to prevent memory leaks
+  useEffect(() => {
+    const currentUrl = imagePreview
+    const wasObjectUrl = isObjectUrlRef.current
     return () => {
-      if (imagePreview) {
-        URL.revokeObjectURL(imagePreview)
+      if (wasObjectUrl && currentUrl && currentUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(currentUrl)
       }
     }
   }, [imagePreview])
@@ -118,13 +168,20 @@ export default function App() {
   const handleFileSelect = (file) => {
     setError(null)
     setPrediction(null)
+    setActiveHistoryId(null)
 
     if (!validateFile(file)) {
       return
     }
 
+    // Clean up previous blob URL if needed
+    if (isObjectUrlRef.current && imagePreview && imagePreview.startsWith('blob:')) {
+      URL.revokeObjectURL(imagePreview)
+    }
+
     setSelectedFile(file)
     const previewUrl = URL.createObjectURL(file)
+    isObjectUrlRef.current = true
     setImagePreview(previewUrl)
   }
 
@@ -173,16 +230,19 @@ export default function App() {
     setError(null)
     setPrediction(null)
 
+    const currentFile = selectedFile
     const formData = new FormData()
-    formData.append('file', selectedFile)
+    formData.append('file', currentFile)
 
     try {
-      const response = await fetch(`${API_BASE_URL}/predict`, {
-        method: 'POST',
-        // Do NOT manually set 'Content-Type': the browser will automatically
-        // provide 'multipart/form-data; boundary=...'
-        body: formData,
-      })
+      // Convert file to data URL in parallel for durable history storage
+      const [response, dataUrl] = await Promise.all([
+        fetch(`${API_BASE_URL}/predict`, {
+          method: 'POST',
+          body: formData,
+        }),
+        fileToDataUrl(currentFile),
+      ])
 
       if (!response.ok) {
         let errorDetail = `Classification failed with status ${response.status}.`
@@ -199,6 +259,25 @@ export default function App() {
 
       const data = await response.json()
       setPrediction(data)
+
+      // Record in history without duplicate triggers
+      const historyEntryId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+      const newEntry = {
+        id: historyEntryId,
+        fileName: currentFile.name,
+        fileSize: currentFile.size,
+        timestamp: new Date().toISOString(),
+        imageDataUrl: dataUrl,
+        prediction: {
+          label: data.label,
+          hotdog_probability: data.hotdog_probability,
+          confidence: data.confidence,
+          gradcam_base64: data.gradcam_base64,
+        },
+      }
+
+      setActiveHistoryId(historyEntryId)
+      setHistory((prev) => [newEntry, ...prev].slice(0, MAX_HISTORY_ITEMS))
     } catch (err) {
       console.error('Prediction error:', err)
       setError(err.message || 'Network error: could not connect to backend.')
@@ -208,12 +287,49 @@ export default function App() {
   }
 
   /**
+   * Revisit a past history entry without re-querying the backend
+   */
+  const handleSelectHistoryItem = (entry) => {
+    // Revoke any active blob URL before switching to history's data URL
+    if (isObjectUrlRef.current && imagePreview && imagePreview.startsWith('blob:')) {
+      URL.revokeObjectURL(imagePreview)
+    }
+    isObjectUrlRef.current = false
+    setSelectedFile(null)
+    setImagePreview(entry.imageDataUrl)
+    setPrediction(entry.prediction)
+    setActiveHistoryId(entry.id)
+    setError(null)
+
+    // Smoothly scroll back to the result or main classifier section
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  /**
+   * Clear History with confirmation
+   */
+  const handleConfirmClearHistory = () => {
+    setHistory([])
+    setShowClearConfirm(false)
+    try {
+      sessionStorage.removeItem(SESSION_STORAGE_KEY)
+    } catch (err) {
+      console.warn('Failed to clear sessionStorage:', err)
+    }
+  }
+
+  /**
    * Reset everything to start fresh
    */
   const handleReset = () => {
+    if (isObjectUrlRef.current && imagePreview && imagePreview.startsWith('blob:')) {
+      URL.revokeObjectURL(imagePreview)
+    }
+    isObjectUrlRef.current = false
     setSelectedFile(null)
     setImagePreview(null)
     setPrediction(null)
+    setActiveHistoryId(null)
     setError(null)
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
@@ -225,7 +341,7 @@ export default function App() {
     if (typeof val === 'number' && !isNaN(val)) {
       return `${val.toFixed(1)}%`
     }
-    return 'N/A'
+    return null
   }
 
   const formatProbability = (val) => {
@@ -233,6 +349,16 @@ export default function App() {
       return `${(val * 100).toFixed(1)}%`
     }
     return 'N/A'
+  }
+
+  const formatTimestamp = (isoString) => {
+    if (!isoString) return ''
+    try {
+      const d = new Date(isoString)
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    } catch {
+      return ''
+    }
   }
 
   const labelLower = prediction?.label?.toLowerCase() || ''
@@ -329,9 +455,17 @@ export default function App() {
               />
             </div>
             <div className="preview-file-info">
-              <span>{selectedFile?.name}</span>
-              <span>•</span>
-              <span>{(selectedFile?.size / 1024).toFixed(1)} KB</span>
+              {selectedFile ? (
+                <>
+                  <span>{selectedFile.name}</span>
+                  <span>•</span>
+                  <span>{(selectedFile.size / 1024).toFixed(1)} KB</span>
+                </>
+              ) : (
+                <span className="history-loaded-tag">
+                  Viewing prediction from history
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -372,7 +506,7 @@ export default function App() {
             type="button"
             className="btn btn-secondary"
             onClick={handleReset}
-            disabled={loading || (!selectedFile && !prediction && !error)}
+            disabled={loading || (!selectedFile && !prediction && !error && !imagePreview)}
           >
             Reset
           </button>
@@ -425,7 +559,7 @@ export default function App() {
                 <span className="metric-value">
                   {isUncertain
                     ? 'Indeterminate'
-                    : formatConfidence(prediction.confidence)}
+                    : formatConfidence(prediction.confidence) || 'N/A'}
                 </span>
                 <div className="progress-bar-container">
                   <div
@@ -506,6 +640,139 @@ export default function App() {
           </article>
         )}
       </section>
+
+      {/* Prediction History Section */}
+      <section className="history-section card" aria-label="Prediction History">
+        <div className="history-header">
+          <div className="history-title-group">
+            <h2 className="history-title">
+              <span aria-hidden="true">📜</span>
+              Prediction History
+            </h2>
+            <span className="history-count-badge">
+              {history.length} {history.length === 1 ? 'entry' : 'entries'}
+            </span>
+          </div>
+
+          {history.length > 0 && (
+            <div className="history-actions">
+              {!showClearConfirm ? (
+                <button
+                  type="button"
+                  className="btn-history-clear"
+                  onClick={() => setShowClearConfirm(true)}
+                  aria-label="Clear all prediction history"
+                >
+                  Clear History
+                </button>
+              ) : (
+                <div className="clear-confirm-group" role="group" aria-label="Confirm clear history">
+                  <span className="clear-confirm-text">Clear all {history.length} entries?</span>
+                  <button
+                    type="button"
+                    className="btn-confirm-yes"
+                    onClick={handleConfirmClearHistory}
+                  >
+                    Yes, Clear
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-confirm-cancel"
+                    onClick={() => setShowClearConfirm(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {history.length === 0 ? (
+          <div className="history-empty">
+            <span className="history-empty-icon" aria-hidden="true">🍽️</span>
+            <p>No predictions yet in this session.</p>
+            <span className="history-empty-hint">
+              Images you classify will appear here so you can revisit their details and Grad-CAM maps anytime.
+            </span>
+          </div>
+        ) : (
+          <div className="history-list" role="feed" aria-label="Previous predictions list">
+            {history.map((item) => {
+              const itemLabel = item.prediction?.label?.toLowerCase() || ''
+              const itemIsHotdog = itemLabel === 'hotdog'
+              const itemIsUncertain = itemLabel === 'uncertain'
+              const isActive = item.id === activeHistoryId
+              const itemConfidence = formatConfidence(item.prediction?.confidence)
+
+              return (
+                <article
+                  key={item.id}
+                  className={`history-item ${
+                    itemIsHotdog ? 'item-hotdog' : itemIsUncertain ? 'item-uncertain' : 'item-not-hotdog'
+                  } ${isActive ? 'item-active' : ''}`}
+                  onClick={() => handleSelectHistoryItem(item)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      handleSelectHistoryItem(item)
+                    }
+                  }}
+                  aria-label={`Revisit prediction for ${item.fileName || 'image'}: ${item.prediction?.label}`}
+                >
+                  <div className="history-thumb-wrapper">
+                    <img
+                      src={item.imageDataUrl}
+                      alt={`Thumbnail of ${item.fileName || 'food'}`}
+                      className="history-thumb-img"
+                    />
+                    <span className="history-thumb-badge" aria-hidden="true">
+                      {itemIsHotdog ? '🌭' : itemIsUncertain ? '🤔' : '🚫'}
+                    </span>
+                  </div>
+
+                  <div className="history-details">
+                    <div className="history-details-top">
+                      <span className="history-item-label">
+                        {item.prediction?.label}
+                      </span>
+                      <time className="history-item-time" dateTime={item.timestamp}>
+                        {formatTimestamp(item.timestamp)}
+                      </time>
+                    </div>
+
+                    <div className="history-item-stats">
+                      <span className="history-stat">
+                        <strong className="history-stat-name">Prob:</strong>{' '}
+                        {formatProbability(item.prediction?.hotdog_probability)}
+                      </span>
+                      {/* Only display confidence if it is numeric, never invent one for Uncertain */}
+                      {itemConfidence && (
+                        <span className="history-stat">
+                          <strong className="history-stat-name">Conf:</strong>{' '}
+                          {itemConfidence}
+                        </span>
+                      )}
+                      {itemIsUncertain && (
+                        <span className="history-stat uncertain-badge">
+                          Uncertain
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <span className="history-view-arrow" aria-hidden="true">
+                    {isActive ? '●' : '→'}
+                  </span>
+                </article>
+              )
+            })}
+          </div>
+        )}
+      </section>
     </main>
   )
 }
+
