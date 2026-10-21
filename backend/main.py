@@ -13,10 +13,14 @@ from PIL import Image, UnidentifiedImageError
 
 # Flexible import: works when running from project root (uvicorn backend.main:app)
 # or directly from within the backend directory.
+
 try:
     from backend.inference import model, predict_image
-except ImportError:
+except ModuleNotFoundError as exc:
+    if exc.name != "backend":
+        raise
     from inference import model, predict_image
+
 
 # Configure logging
 logger = logging.getLogger("seefood.api")

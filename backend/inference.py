@@ -27,7 +27,7 @@ except ImportError:
 # Path Resolution
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-MODEL_PATH = PROJECT_ROOT / "models" / "seefood_best.keras"
+MODEL_PATH = PROJECT_ROOT / "models" / "seefood_augmented_best.keras"
 CONFIG_PATH = PROJECT_ROOT / "config" / "thresholds.json"
 
 # Check if model exists and raise a clear error if missing

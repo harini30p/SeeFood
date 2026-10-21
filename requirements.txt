@@ -1,0 +1,9 @@
+
+tensorflow
+fastapi
+uvicorn
+pillow
+numpy
+python-multipart
+pytest
+httpx
