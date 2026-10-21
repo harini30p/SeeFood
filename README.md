@@ -201,24 +201,41 @@ Grad-CAM is a visual interpretability technique that highlights salient convolut
 
 ## TensorFlow Lite Optimization and Benchmarking
 
-To evaluate edge deployment, the Keras model was converted into a dynamic-range quantized TensorFlow Lite (`.tflite`) flatbuffer using post-training quantization.
+To evaluate edge deployment, the Keras models can be converted into dynamic-range quantized TensorFlow Lite (`.tflite`) flatbuffers using post-training quantization.
 
 ### Model Artifact Sizes
 - **Keras Models**: ~9.6 MB (`seefood_best.keras`: 9.63 MB, `seefood_augmented_best.keras`: 9.62 MB)
-- **TFLite Flatbuffer (`models/seefood.tflite`)**: ~2.5 MB (2.50 MB)
+- **TFLite Flatbuffers**: ~2.5 MB (`models/seefood.tflite`: 2.50 MB, `models/seefood_augmented.tflite`: 2.50 MB)
 - **Size Reduction**: Approximately **74% size reduction** by quantizing model weights from Float32 to INT8 while dequantizing activations to Float32 dynamically during runtime.
 
-### Recorded Colab Benchmark Measurements
-*Note: The following latency figures were measured in a specific Google Colab CPU/GPU runtime environment and represent environment-specific observations, not a universal guarantee of hardware performance:*
+### Model Alignment: Baseline vs. Augmented Workflows
+The optimization scripts support separate, isolated workflows for both models:
+- **Augmented Workflow** (`--model augmented`, default):
+  - Keras Source: `models/seefood_augmented_best.keras` (the model served by the FastAPI backend)
+  - TFLite Target: `models/seefood_augmented.tflite`
+- **Baseline Workflow** (`--model baseline`):
+  - Keras Source: `models/seefood_best.keras`
+  - TFLite Target: `models/seefood.tflite`
+
+Both workflows never overwrite each other's target artifacts.
+
+### Synthetic Consistency vs. Real-Image Evaluation
+1. **Synthetic Consistency Benchmarking** (`scripts/benchmark_models.py` without `--data-dir`):
+   - Feeds deterministic pseudo-random Float32 arrays in $[-1, 1]$ directly to both models.
+   - Measures raw numerical conversion divergence, binary decision consistency, three-way threshold agreement, and CPU latency.
+   - **Important**: Synthetic testing measures conversion consistency only. It does **not** measure classification accuracy on real food photography.
+2. **Real-Image Evaluation** (`scripts/benchmark_models.py --data-dir <path>`):
+   - Accepts a real dataset directory containing `hot_dog/` and `not_hot_dog/` subfolders.
+   - Applies the identical image loading, resizing to $224 \times 224$, and `mobilenet_v2.preprocess_input` normalization as `backend/preprocessing.py`.
+   - Computes actual real-world classification accuracy, precision, recall, F1-scores, confusion matrices, and model-to-model agreement on genuine food imagery.
+
+### Historical Colab Benchmark Measurements (Environment-Specific)
+*Note: The following latency figures were measured in a specific Google Colab CPU/GPU runtime environment on the baseline model and represent historical observations, not universal hardware guarantees:*
 - **Keras Mean Latency**: ~150.87 ms per inference
-- **TFLite Mean Latency**: ~21.16 ms per inference (observed ~7.1x speedup in that environment)
+- **TFLite Mean Latency**: ~21.16 ms per inference (observed ~7.1x speedup in that Colab environment)
 - **Decision Agreement**:
   - **98.55%** binary prediction agreement ($p \ge 0.5$) across the evaluated sample distribution.
   - **97.39%** three-way label agreement when evaluated against the dual thresholds.
-
-### Engineering Trade-Off and Model Version Scope
-- **Trade-Off**: TFLite significantly reduces disk space and inference latency, making it attractive for mobile or browser-side execution. However, post-training dynamic-range quantization introduces small numerical differences in output probabilities compared to full Float32 graph execution.
-- **Model Scope Discrepancy**: The active FastAPI backend in `backend/inference.py` serves the **augmented model** (`models/seefood_augmented_best.keras`). However, the existing scripts in `scripts/export_tflite.py` and `scripts/benchmark_models.py` reference `models/seefood_best.keras` (the baseline model). Consequently, the existing `.tflite` artifact and benchmark results correspond to the **baseline model**, not the active augmented model.
 
 ---
 
@@ -237,7 +254,7 @@ To evaluate edge deployment, the Keras model was converted into a dynamic-range 
   This failure occurs because Keras 3's internal tracing path generates `ReadVariableOp` nodes without the `value` attribute that TensorFlow Lite's MLIR frontend requires.
 - **Solution**: As implemented in `scripts/export_tflite.py`, the conversion pipeline circumvents this by employing a two-step export process:
   1. The Keras 3 model is exported to an intermediate TensorFlow 2 SavedModel directory via `model.export(tmp_dir)`.
-  2. The converter is initialized via `tf.lite.TFLiteConverter.from_saved_model(tmp_dir)`, with dynamic-range optimization (`converter.optimizations = [tf.lite.Optimize.DEFAULT]`). This path bypasses Keras 2 tracing and exports a valid TFLite flatbuffer cleanly.
+  2. The converter is initialized via `tf.lite.TFLiteConverter.from_saved_model(tmp_dir)`, with dynamic-range optimization (`converter.optimizations = [tf.lite.Optimize.DEFAULT]`). This path bypasses Keras 2 tracing and exports a valid TFLite flatbuffer cleanly for both baseline and augmented models.
 
 ---
 
@@ -265,15 +282,17 @@ SeeFood/
 │       ├── App.css                    # Component layout and theme styling
 │       └── index.css                  # Global styles and resets
 ├── models/
-│   ├── seefood.tflite                 # 2.5 MB Quantized TFLite flatbuffer (from baseline)
+│   ├── seefood.tflite                 # 2.5 MB Quantized TFLite flatbuffer (baseline)
+│   ├── seefood_augmented.tflite       # 2.5 MB Quantized TFLite flatbuffer (augmented)
 │   ├── seefood_augmented_best.keras   # 9.6 MB Active model loaded by backend
-│   └── seefood_best.keras             # 9.6 MB Baseline model used by export/benchmark
+│   └── seefood_best.keras             # 9.6 MB Baseline model
 ├── scripts/
-│   ├── export_tflite.py               # Keras 3 -> SavedModel -> TFLite conversion
-│   └── benchmark_models.py            # Latency and consistency benchmark suite
+│   ├── export_tflite.py               # CLI export script (--model augmented/baseline)
+│   └── benchmark_models.py            # CLI benchmark & real-image evaluation script
 └── tests/
     ├── conftest.py                    # Pytest fixtures (TestClient, in-memory image generator)
-    └── test_api.py                    # Integration and unit test suite
+    ├── test_api.py                    # FastAPI endpoint and threshold logic tests
+    └── test_scripts.py                # CLI path resolution and metric calculation tests
 ```
 
 ---
@@ -446,16 +465,15 @@ curl -X POST "http://127.0.0.1:8000/predict" \
 
 ## Running Automated Tests
 
-The automated test suite in `tests/test_api.py` uses `pytest` and `fastapi.testclient.TestClient` to validate API routes, file handling, response schemas, and threshold logic without reading images from disk.
+The automated test suite in `tests/` uses `pytest` and `fastapi.testclient.TestClient` to validate API routes, file handling, response schemas, threshold logic, and optimization CLI utilities without reading images from disk.
 
 Run the test suite from the root directory:
 ```bash
-pytest
-```
+# Recommended command within virtual environment
+python -m pytest
 
-For verbose output:
-```bash
-pytest -v
+# Or with verbose output
+python -m pytest -v
 ```
 
 ### Test Scope
@@ -464,30 +482,62 @@ pytest -v
 - Validation that `confidence` is numeric for decisive predictions and `null` for `Uncertain` outcomes.
 - HTTP error code assertions for corrupt files (400), empty files (400), unsupported formats (415), and missing fields (422).
 - Unit tests for boundary conditions in `classify_probability()` and JSON fallback logic in `load_threshold_config()`.
+- CLI path resolution, model configuration dictionaries, metric computations (`compute_binary_metrics`), and missing-dataset safety handling in `tests/test_scripts.py`.
 
 ---
 
 ## Reproducing Model Export and Benchmarks
 
 ### 1. Exporting to TensorFlow Lite
-To convert the baseline Keras model into a quantized `.tflite` model:
+
+#### Export the Active Augmented Model (Default)
+Converts `models/seefood_augmented_best.keras` into `models/seefood_augmented.tflite`:
 ```bash
-python scripts/export_tflite.py
+python scripts/export_tflite.py --model augmented
 ```
-*Outputs: Generates `models/seefood.tflite` via intermediate SavedModel conversion and inspects input/output tensor shapes and sizes.*
+
+#### Export the Baseline Model
+Converts `models/seefood_best.keras` into `models/seefood.tflite`:
+```bash
+python scripts/export_tflite.py --model baseline
+```
+
+Both targets are saved separately in `models/` without overwriting each other.
+
+---
 
 ### 2. Running Model Benchmarks
-To compare inference latency and numerical prediction agreement between the Keras baseline model and the TFLite flatbuffer using synthetic inputs:
-```bash
-python scripts/benchmark_models.py
-```
-*Note: The benchmark script performs warm-up iterations followed by timed inferences and agreement comparisons across synthetic float arrays. It verifies conversion consistency; it does not measure real-world accuracy on food photographs.*
+
+#### A. Synthetic Conversion-Consistency Benchmark
+Compares latency, file sizes, numerical probability deviations, binary decision matching, and three-way threshold agreement across deterministic synthetic inputs:
+
+- **Augmented Model Pair**:
+  ```bash
+  python scripts/benchmark_models.py --model augmented
+  ```
+- **Baseline Model Pair**:
+  ```bash
+  python scripts/benchmark_models.py --model baseline
+  ```
+
+*Note: Synthetic inputs test conversion fidelity between Keras and TFLite; they do not calculate food classification accuracy.*
+
+#### B. Real Validation/Test Image Evaluation
+To measure genuine real-world accuracy, precision, recall, F1-scores, confusion matrices, and latency on real photographs, supply a dataset directory structured with `hot_dog/` and `not_hot_dog/` subfolders:
+
+- **Evaluate Augmented Model Pair**:
+  ```bash
+  python scripts/benchmark_models.py --model augmented --data-dir path/to/dataset/validation
+  ```
+- **Evaluate Baseline Model Pair**:
+  ```bash
+  python scripts/benchmark_models.py --model baseline --data-dir path/to/dataset/validation
+  ```
 
 ---
 
 ## Known Limitations and Future Improvements
 
 - **Empirical Threshold Calibration**: The 0.35 and 0.65 decision thresholds are heuristic. Future work will calibrate thresholds against validation set ROC/PR curves or apply Platt scaling.
-- **Target Model Alignment in Scripts**: Update `export_tflite.py` and `benchmark_models.py` to optionally target `seefood_augmented_best.keras` rather than defaulting to `seefood_best.keras`.
 - **Out-of-Distribution Handling**: Train an explicit background rejection class or hierarchical classifier to detect non-food imagery.
 - **Automated Model Weight Distribution**: Provide an automated script with checksum validation to download model binaries from release storage (such as GitHub Releases or Hugging Face Hub).

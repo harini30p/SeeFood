@@ -1,9 +1,13 @@
 """Phase 1 TFLite export script for SeeFood.
 
-Loads the existing Keras model, exports an optimized TensorFlow Lite model,
-verifies the output, and prints tensor shapes and sizes.
+Supports exporting both the baseline and augmented Keras models to optimized
+TensorFlow Lite models with dynamic-range quantization.
 
-Keras 3 + TF 2.16.x note
+CLI Options:
+    --model baseline   -> exports models/seefood_best.keras to models/seefood.tflite
+    --model augmented  -> exports models/seefood_augmented_best.keras to models/seefood_augmented.tflite
+
+Keras 3 + TF 2.16.x note:
 --------------------------
 TFLiteConverter.from_keras_model() is a Keras 2 / tf.keras API. Under
 Keras 3, its internal tracing path produces ReadVariableOp nodes without the
@@ -17,24 +21,46 @@ The fix is a two-step process:
 
 The temporary SavedModel directory is created inside tempfile.TemporaryDirectory
 and is cleaned up automatically after conversion.
-
-Usage (from the project root):
-    .venv\\Scripts\\python.exe scripts/export_tflite.py
-
-Nothing in backend/, frontend/, thresholds, tests, or the original .keras
-model is touched.
 """
 
+import argparse
 import sys
 import tempfile
 from pathlib import Path
 
 
-def resolve_paths() -> tuple[Path, Path]:
-    """Return (source .keras path, target .tflite path) relative to project root."""
+MODEL_CONFIGS = {
+    "baseline": {
+        "source": "seefood_best.keras",
+        "target": "seefood.tflite",
+        "desc": "Baseline transfer-learning model",
+    },
+    "augmented": {
+        "source": "seefood_augmented_best.keras",
+        "target": "seefood_augmented.tflite",
+        "desc": "Data-augmented transfer-learning model (active in backend)",
+    },
+}
+
+
+def resolve_paths(model_variant: str = "augmented") -> tuple[Path, Path]:
+    """Return (source .keras path, target .tflite path) relative to project root.
+
+    Args:
+        model_variant (str): 'baseline' or 'augmented'.
+
+    Returns:
+        tuple[Path, Path]: (source_path, target_path)
+    """
+    if model_variant not in MODEL_CONFIGS:
+        raise ValueError(
+            f"Unknown model variant '{model_variant}'. Choose from: {list(MODEL_CONFIGS.keys())}"
+        )
+
     project_root = Path(__file__).resolve().parent.parent
-    source_path = project_root / "models" / "seefood_best.keras"
-    target_path = project_root / "models" / "seefood.tflite"
+    cfg = MODEL_CONFIGS[model_variant]
+    source_path = project_root / "models" / cfg["source"]
+    target_path = project_root / "models" / cfg["target"]
     return source_path, target_path
 
 
@@ -46,10 +72,10 @@ def load_keras_model(source_path: Path):
     """
     if not source_path.exists():
         print(f"[ERROR] Source model not found: {source_path}")
-        print("        Place 'seefood_best.keras' inside the 'models/' directory and retry.")
+        print(f"        Ensure '{source_path.name}' is saved in the 'models/' directory and retry.")
         sys.exit(1)
 
-    print(f"[INFO]  Loading Keras model from: {source_path}")
+    print(f"[INFO]  Loading Keras model from: {source_path.name}")
 
     import tensorflow as tf  # noqa: PLC0415
 
@@ -118,7 +144,7 @@ def export_tflite(model, target_path: Path) -> bytes:
         print("[INFO]  Temporary SavedModel directory cleaned up.")
 
     # ------------------------------------------------------------------ #
-    # Step 3 - write the flatbuffer to models/seefood.tflite              #
+    # Step 3 - write the flatbuffer to target path                       #
     # ------------------------------------------------------------------ #
     target_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -138,13 +164,13 @@ def report_sizes(source_path: Path, target_path: Path) -> None:
     reduction_pct = (1.0 - tgt_bytes / src_bytes) * 100.0
 
     print()
-    print("=" * 57)
+    print("=" * 60)
     print("  File size comparison")
-    print("=" * 57)
-    print(f"  Source  (.keras):   {src_bytes:>12,} bytes  ({src_bytes / (1024**2):.2f} MB)")
-    print(f"  Exported (.tflite): {tgt_bytes:>12,} bytes  ({tgt_bytes / (1024**2):.2f} MB)")
-    print(f"  Size reduction:     {reduction_pct:.1f}%")
-    print("=" * 57)
+    print("=" * 60)
+    print(f"  Source  (.keras) : {source_path.name:<32} {src_bytes:>10,} B ({src_bytes / (1024**2):.2f} MB)")
+    print(f"  Target  (.tflite): {target_path.name:<32} {tgt_bytes:>10,} B ({tgt_bytes / (1024**2):.2f} MB)")
+    print(f"  Size reduction   : {reduction_pct:.1f}%")
+    print("=" * 60)
 
 
 def verify_and_inspect(target_path: Path) -> None:
@@ -175,9 +201,9 @@ def verify_and_inspect(target_path: Path) -> None:
     output_details = interpreter.get_output_details()
 
     print()
-    print("=" * 57)
+    print("=" * 60)
     print("  TFLite tensor inspection")
-    print("=" * 57)
+    print("=" * 60)
     for idx, inp in enumerate(input_details):
         print(f"  Input  [{idx}]  name  : {inp['name']}")
         print(f"           shape : {inp['shape'].tolist()}")
@@ -187,7 +213,7 @@ def verify_and_inspect(target_path: Path) -> None:
         print(f"  Output [{idx}]  name  : {out['name']}")
         print(f"           shape : {out['shape'].tolist()}")
         print(f"           dtype : {out['dtype'].__name__}")
-    print("=" * 57)
+    print("=" * 60)
     print("\n[OK]    Verification passed. The TFLite model is ready for use.")
 
 
@@ -204,8 +230,24 @@ def check_gitignore(target_path: Path) -> None:
         print("[WARN]  No .gitignore found at project root.")
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Export a Keras 3 model to a quantized TensorFlow Lite flatbuffer.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--model",
+        choices=["augmented", "baseline"],
+        default="augmented",
+        help="Select which model variant to export ('augmented' or 'baseline').",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    source_path, target_path = resolve_paths()
+    args = parse_args()
+    print(f"\n[INFO]  Starting TFLite export for '{args.model}' variant...")
+    source_path, target_path = resolve_paths(args.model)
 
     model = load_keras_model(source_path)
     export_tflite(model, target_path)
